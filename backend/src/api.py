@@ -6,6 +6,10 @@ from typing import List, Dict, Any
 import os
 import asyncio
 import logging
+import zipfile
+import tempfile
+import shutil
+from pathlib import Path
 
 from .database import AudioDatabase
 from .audio_processor import AudioProcessor
@@ -110,10 +114,6 @@ async def process_audio_file(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="Invalid file type")
         
         # Save uploaded file to processed_data directory
-        import tempfile
-        import shutil
-        
-        # Create a unique filename
         import uuid
         unique_filename = f"{uuid.uuid4()}_{file.filename}"
         file_path = f"/app/processed_data/{unique_filename}"
@@ -185,19 +185,27 @@ async def process_audio_ml(file: UploadFile = File(...), min_segments: int = 50)
             processed_path, asr_model, min_segments=min_segments
         )
 
-        # Step 3: Store original file
+        # Step 3: Calculate features for full audio and build transcript
+        full_transcript = " ".join([seg['transcript'] for seg in segments])
         duration = audio_processor.get_duration(processed_path)
+        
+        # Calculate features for the full audio
+        full_wpm = feature_extractor.calculate_wpm(full_transcript, duration)
+        full_filler_ratio = feature_extractor.calculate_filler_ratio(full_transcript)
+        full_sentiment = feature_extractor.calculate_sentiment(full_transcript)
+
+        # Step 4: Store original file with calculated features
         file_id = db.insert_audio_file({
             "filename": os.path.basename(file_path),
             "duration": duration,
-            "transcript": "",  # Will be built from segments
-            "wpm": 0.0,
-            "filler_ratio": 0.0,
-            "sentiment_score": 0.0,
+            "transcript": full_transcript,
+            "wpm": full_wpm,
+            "filler_ratio": full_filler_ratio,
+            "sentiment_score": full_sentiment,
             "audio_path": processed_path
         })
 
-        # Step 4: Store segments with quality metrics
+        # Step 5: Store segments with quality metrics
         stored_segments = []
         for segment in segments:
             # Extract features for segment
@@ -252,6 +260,12 @@ async def process_audio_ml(file: UploadFile = File(...), min_segments: int = 50)
             "file_id": file_id,
             "segments_created": len(stored_segments),
             "segments": stored_segments,
+            "full_audio_features": {
+                "wpm": full_wpm,
+                "filler_ratio": full_filler_ratio,
+                "sentiment_score": full_sentiment,
+                "transcript": full_transcript
+            },
             "quality_summary": {
                 "average_quality_score": sum(s['quality_score'] for s in stored_segments) / len(stored_segments) if stored_segments else 0,
                 "high_quality_segments": len([s for s in stored_segments if s['quality_score'] >= 0.7]),
@@ -338,6 +352,161 @@ async def process_audio_advanced(file: UploadFile = File(...)):
         }
     
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/audio-files/{file_id}/segments/{segment_id}/download")
+async def download_segment(file_id: int, segment_id: int):
+    """Download a specific audio segment"""
+    try:
+        # Get segment data from database
+        segments = db.get_segments_by_file_id(file_id)
+        segment = None
+        for seg in segments:
+            if seg['id'] == segment_id:
+                segment = seg
+                break
+        
+        if not segment:
+            raise HTTPException(status_code=404, detail="Segment not found")
+        
+        audio_path = segment.get("audio_path")
+        if not audio_path or not os.path.exists(audio_path):
+            raise HTTPException(status_code=404, detail="Segment audio file not found")
+        
+        return FileResponse(
+            path=audio_path,
+            media_type="audio/wav",
+            filename=f"segment_{segment_id:03d}.wav"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/audio-files/{file_id}/segments/download-zip")
+async def download_file_segments_zip(file_id: int):
+    """Download all segments for a specific file as a zip"""
+    try:
+        # Get file data
+        file_data = db.get_file_by_id(file_id)
+        if not file_data:
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Get all segments for this file
+        segments = db.get_segments_by_file_id(file_id)
+        if not segments:
+            raise HTTPException(status_code=404, detail="No segments found for this file")
+        
+        # Create temporary zip file
+        temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+        temp_zip.close()
+        
+        with zipfile.ZipFile(temp_zip.name, 'w') as zipf:
+            # Add segments to zip
+            for segment in segments:
+                audio_path = segment.get("audio_path")
+                if audio_path and os.path.exists(audio_path):
+                    # Create filename for zip
+                    segment_filename = f"segment_{segment['segment_index']:03d}.wav"
+                    
+                    # Add audio file to zip
+                    zipf.write(audio_path, segment_filename)
+                    
+                    # Add transcript as text file
+                    transcript_filename = f"segment_{segment['segment_index']:03d}.txt"
+                    transcript_content = segment.get("transcript", "")
+                    zipf.writestr(transcript_filename, transcript_content)
+                    
+                    # Add metadata as JSON
+                    metadata_filename = f"segment_{segment['segment_index']:03d}_metadata.json"
+                    metadata = {
+                        "segment_index": segment['segment_index'],
+                        "start_time": segment['start_time'],
+                        "end_time": segment['end_time'],
+                        "duration": segment['duration'],
+                        "quality_score": segment['quality_score'],
+                        "wpm": segment['wpm'],
+                        "filler_ratio": segment['filler_ratio'],
+                        "sentiment_score": segment['sentiment_score'],
+                        "is_ml_ready": segment['is_ml_ready']
+                    }
+                    import json
+                    zipf.writestr(metadata_filename, json.dumps(metadata, indent=2))
+        
+        # Return the zip file
+        return FileResponse(
+            path=temp_zip.name,
+            media_type="application/zip",
+            filename=f"segments_{file_id}.zip",
+            background=lambda: os.unlink(temp_zip.name)  # Clean up after download
+        )
+    
+    except Exception as e:
+        # Clean up temp file if it exists
+        if 'temp_zip' in locals() and os.path.exists(temp_zip.name):
+            os.unlink(temp_zip.name)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ml-ready-segments/download-zip")
+async def download_ml_ready_segments_zip(min_quality: float = 0.3, limit: int = 100):
+    """Download ML-ready segments as a zip file"""
+    try:
+        # Get ML-ready segments
+        segments = db.get_ml_ready_segments(min_quality_score=min_quality, limit=limit)
+        if not segments:
+            raise HTTPException(status_code=404, detail="No ML-ready segments found")
+        
+        # Create temporary zip file
+        temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+        temp_zip.close()
+        
+        with zipfile.ZipFile(temp_zip.name, 'w') as zipf:
+            # Add segments to zip
+            for segment in segments:
+                audio_path = segment.get("audio_path")
+                if audio_path and os.path.exists(audio_path):
+                    # Create filename for zip
+                    segment_filename = f"ml_segment_{segment['id']:03d}.wav"
+                    
+                    # Add audio file to zip
+                    zipf.write(audio_path, segment_filename)
+                    
+                    # Add transcript as text file
+                    transcript_filename = f"ml_segment_{segment['id']:03d}.txt"
+                    transcript_content = segment.get("transcript", "")
+                    zipf.writestr(transcript_filename, transcript_content)
+                    
+                    # Add metadata as JSON
+                    metadata_filename = f"ml_segment_{segment['id']:03d}_metadata.json"
+                    metadata = {
+                        "segment_id": segment['id'],
+                        "original_file_id": segment['original_file_id'],
+                        "segment_index": segment['segment_index'],
+                        "start_time": segment['start_time'],
+                        "end_time": segment['end_time'],
+                        "duration": segment['duration'],
+                        "quality_score": segment['quality_score'],
+                        "wpm": segment['wpm'],
+                        "filler_ratio": segment['filler_ratio'],
+                        "sentiment_score": segment['sentiment_score'],
+                        "training_priority": segment['training_priority'],
+                        "volume_db": segment['volume_db'],
+                        "noise_ratio": segment['noise_ratio'],
+                        "snr_estimate": segment['snr_estimate']
+                    }
+                    import json
+                    zipf.writestr(metadata_filename, json.dumps(metadata, indent=2))
+        
+        # Return the zip file
+        return FileResponse(
+            path=temp_zip.name,
+            media_type="application/zip",
+            filename=f"ml_ready_segments_q{min_quality}_n{len(segments)}.zip",
+            background=lambda: os.unlink(temp_zip.name)  # Clean up after download
+        )
+    
+    except Exception as e:
+        # Clean up temp file if it exists
+        if 'temp_zip' in locals() and os.path.exists(temp_zip.name):
+            os.unlink(temp_zip.name)
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

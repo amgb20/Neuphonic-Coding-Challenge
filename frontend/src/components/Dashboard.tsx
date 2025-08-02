@@ -13,11 +13,29 @@ interface AudioFile {
   created_at: string;
 }
 
+interface AudioSegment {
+  id: number;
+  original_file_id: number;
+  segment_index: number;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  transcript: string;
+  audio_path: string;
+  wpm: number;
+  filler_ratio: number;
+  sentiment_score: number;
+  quality_score: number;
+}
+
 const Dashboard: React.FC = () => {
   const [audioFiles, setAudioFiles] = useState<AudioFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [showSegments, setShowSegments] = useState(false);
+  const [segments, setSegments] = useState<AudioSegment[]>([]);
+  const [selectedFileId, setSelectedFileId] = useState<number | null>(null);
 
   useEffect(() => {
     fetchAudioFiles();
@@ -42,22 +60,58 @@ const Dashboard: React.FC = () => {
 
     try {
       setUploading(true);
+      setError(null);
       const formData = new FormData();
       formData.append('file', file);
 
-      await axios.post('http://localhost:8000/api/process-audio', formData, {
+      // Always use ML processing for all uploads
+      const response = await axios.post('http://localhost:8000/api/process-audio-ml', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
       });
 
+      console.log('Processing result:', response.data);
+      
       // Refresh the list after upload
       await fetchAudioFiles();
-    } catch (err) {
-      setError('Failed to upload and process audio file');
-      console.error('Error uploading file:', err);
+    } catch (err: any) {
+      setError(`Failed to process audio: ${err.response?.data?.detail || err.message}`);
+      console.error('Error processing file:', err);
     } finally {
       setUploading(false);
+    }
+  };
+
+  const fetchSegments = async (fileId: number) => {
+    try {
+      const response = await axios.get(`http://localhost:8000/api/audio-files/${fileId}/segments`);
+      setSegments(response.data.segments || []);
+      setSelectedFileId(fileId);
+      setShowSegments(true);
+    } catch (err) {
+      setError('Failed to fetch segments');
+      console.error('Error fetching segments:', err);
+    }
+  };
+
+  const downloadSegmentsZip = async (fileId: number) => {
+    try {
+      const response = await axios.get(`http://localhost:8000/api/audio-files/${fileId}/segments/download-zip`, {
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `segments_${fileId}.zip`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setError('Failed to download segments');
+      console.error('Error downloading segments:', err);
     }
   };
 
@@ -79,6 +133,18 @@ const Dashboard: React.FC = () => {
     return 'Neutral';
   };
 
+  const getQualityColor = (score: number) => {
+    if (score >= 0.7) return 'text-green-600';
+    if (score >= 0.4) return 'text-yellow-600';
+    return 'text-red-600';
+  };
+
+  const getQualityLabel = (score: number) => {
+    if (score >= 0.7) return 'High';
+    if (score >= 0.4) return 'Medium';
+    return 'Low';
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-64">
@@ -94,14 +160,14 @@ const Dashboard: React.FC = () => {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Audio Files</h2>
-          <p className="text-gray-600">Processed audio files and their analysis</p>
+          <p className="text-gray-600">Processed audio files with ML-ready segments</p>
         </div>
         
         <label className="cursor-pointer bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors duration-200">
           {uploading ? 'Processing...' : 'Upload Audio'}
           <input
             type="file"
-            accept=".wav,.mp3,.m4a"
+            accept="audio/*"
             onChange={handleFileUpload}
             className="hidden"
             disabled={uploading}
@@ -153,6 +219,59 @@ const Dashboard: React.FC = () => {
         </div>
       )}
 
+      {/* Segments View */}
+      {showSegments && segments.length > 0 && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">
+              Segments for File ID: {selectedFileId} ({segments.length} segments)
+            </h3>
+            <div className="flex space-x-2">
+              <button
+                onClick={() => setShowSegments(false)}
+                className="bg-gray-100 text-gray-700 px-3 py-1 rounded-md text-sm hover:bg-gray-200"
+              >
+                Hide Segments
+              </button>
+              {selectedFileId && (
+                <button
+                  onClick={() => downloadSegmentsZip(selectedFileId)}
+                  className="bg-blue-600 text-white px-3 py-1 rounded-md text-sm hover:bg-blue-700"
+                >
+                  Download All
+                </button>
+              )}
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {segments.map((segment) => (
+              <div key={segment.id} className="border border-gray-200 rounded-lg p-4">
+                <div className="flex justify-between items-start mb-2">
+                  <span className="text-sm font-medium text-gray-900">
+                    Segment {segment.segment_index}
+                  </span>
+                  <span className={`text-xs px-2 py-1 rounded ${getQualityColor(segment.quality_score)}`}>
+                    Quality: {getQualityLabel(segment.quality_score)} ({(segment.quality_score * 100).toFixed(0)}%)
+                  </span>
+                </div>
+                <div className="text-xs text-gray-500 mb-2">
+                  {formatDuration(segment.start_time)} - {formatDuration(segment.end_time)} 
+                  ({formatDuration(segment.duration)})
+                </div>
+                <p className="text-sm text-gray-700 mb-2 line-clamp-3">
+                  {segment.transcript}
+                </p>
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>WPM: {segment.wpm}</span>
+                  <span>Sentiment: {segment.sentiment_score.toFixed(2)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Audio Files List */}
       {audioFiles.length === 0 ? (
         <div className="text-center py-12">
@@ -167,7 +286,7 @@ const Dashboard: React.FC = () => {
             Upload Audio File
             <input
               type="file"
-              accept=".wav,.mp3,.m4a"
+              accept="audio/*"
               onChange={handleFileUpload}
               className="hidden"
             />
@@ -187,12 +306,20 @@ const Dashboard: React.FC = () => {
                       {formatDuration(file.duration)} • {new Date(file.created_at).toLocaleDateString()}
                     </p>
                   </div>
-                  <Link
-                    to={`/audio/${file.id}`}
-                    className="bg-primary-100 text-primary-700 px-3 py-1 rounded-md text-sm font-medium hover:bg-primary-200 transition-colors duration-200"
-                  >
-                    View Details
-                  </Link>
+                  <div className="flex space-x-2">
+                    <button
+                      onClick={() => fetchSegments(file.id)}
+                      className="bg-green-100 text-green-700 px-3 py-1 rounded-md text-sm font-medium hover:bg-green-200 transition-colors duration-200"
+                    >
+                      View Segments
+                    </button>
+                    <Link
+                      to={`/audio/${file.id}`}
+                      className="bg-primary-100 text-primary-700 px-3 py-1 rounded-md text-sm font-medium hover:bg-primary-200 transition-colors duration-200"
+                    >
+                      View Details
+                    </Link>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-3 gap-4 mb-4">

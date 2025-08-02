@@ -14,11 +14,11 @@ class AudioProcessor:
         self.silence_threshold = 0.5  # seconds
         self.min_segment_length = 1.0  # seconds
         self.max_segment_length = 30.0  # seconds
-        # Quality thresholds
-        self.min_volume_threshold = 0.01
-        self.max_noise_ratio = 0.7
-        self.min_snr_threshold = 10.0  # dB
-        self.min_quality_score = 0.3
+        # Quality thresholds - made more lenient for user's audio files
+        self.min_volume_threshold = 0.0005  # Lowered further for more tolerance
+        self.max_noise_ratio = 0.9  # Increased tolerance for background noise
+        self.min_snr_threshold = 3.0  # Lowered threshold for SNR
+        self.min_quality_score = 0.05  # Much lower threshold for acceptance
     
     def process_audio(self, audio_path: str) -> str:
         """Process audio file: normalize, convert sample rate, etc."""
@@ -34,8 +34,11 @@ class AudioProcessor:
             if sr != self.target_sr:
                 y = librosa.resample(y, orig_sr=sr, target_sr=self.target_sr)
             
-            # Normalize volume
-            y = librosa.util.normalize(y)
+            # Normalize volume with less aggressive normalization
+            # Use peak normalization instead of RMS normalization
+            max_val = np.max(np.abs(y))
+            if max_val > 0:
+                y = y / max_val * 0.8  # Scale to 80% of max to avoid clipping
             
             # Save processed audio
             output_path = audio_path.replace('.mp3', '_processed.wav').replace('.wav', '_processed.wav')
@@ -66,8 +69,8 @@ class AudioProcessor:
             Dictionary with quality metrics
         """
         try:
-            # Volume assessment
-            volume = float(np.mean(np.abs(audio_segment)))
+            # Volume assessment - use RMS for better volume detection
+            volume = float(np.sqrt(np.mean(audio_segment**2)))
             volume_db = 20 * np.log10(volume + 1e-10)
             
             # Background noise assessment
@@ -128,24 +131,22 @@ class AudioProcessor:
         Returns:
             Quality score between 0.0 and 1.0
         """
-        # Volume component (0-0.3)
-        volume_score = min(1.0, volume / 0.1) * 0.3
+        # Volume component (0-0.3) - adjusted for RMS volume calculation
+        volume_score = min(1.0, volume / 0.1) * 0.3  # Adjusted for RMS calculation
         
-        # Noise component (0-0.3)
-        noise_score = max(0.0, 1.0 - noise_ratio) * 0.3
+        # Noise component (0-0.3) - more tolerant of background noise
+        noise_score = max(0.0, 1.0 - noise_ratio * 0.8) * 0.3  # More tolerant scaling
         
-        # SNR component (0-0.2)
-        snr_score = min(1.0, snr_estimate / 20.0) * 0.2
+        # SNR component (0-0.2) - much more lenient
+        snr_score = min(1.0, snr_estimate / 2.0) * 0.2  # Lowered threshold from 5.0 to 2.0
         
-        # Frequency content component (0-0.1)
-        # Prefer speech frequencies (100-8000 Hz)
+        # Frequency content component (0-0.1) - wider range
         freq_score = 0.0
-        if 100 <= spectral_centroid <= 8000:
+        if 30 <= spectral_centroid <= 15000:  # Much wider range (was 50-10000)
             freq_score = 0.1
         
-        # Zero crossing rate component (0-0.1)
-        # Lower ZCR is better for speech
-        zcr_score = max(0.0, 1.0 - zcr) * 0.1
+        # Zero crossing rate component (0-0.1) - more tolerant
+        zcr_score = max(0.0, 1.0 - zcr * 2.0) * 0.1  # More tolerant scaling (was 3.0)
         
         total_score = volume_score + noise_score + snr_score + freq_score + zcr_score
         return min(1.0, total_score)
@@ -252,48 +253,99 @@ class AudioProcessor:
     def segment_with_whisper(self, audio_path: str, whisper_model) -> List[Dict[str, Any]]:
         """Segment audio using Whisper timestamps with enhanced quality filtering"""
         try:
-            # Use Whisper to get word-level timestamps
-            result = whisper_model.transcribe(
-                audio_path,
-                word_timestamps=True,
-                return_segments=True
-            )
+            # Use Whisper to get transcription with timestamps
+            result = whisper_model.transcribe_with_timestamps(audio_path)
             
             segments = []
-            for i, segment in enumerate(result['segments']):
-                # Check if segment is complete sentence
-                if self._is_complete_sentence(segment['text']):
-                    # Extract audio segment
-                    start_sample = int(segment['start'] * self.target_sr)
-                    end_sample = int(segment['end'] * self.target_sr)
-                    
-                    # Load audio and extract segment
-                    y, sr = librosa.load(audio_path, sr=self.target_sr)
-                    segment_audio = y[start_sample:end_sample]
-                    
-                    # Quality assessment
-                    quality_metrics = self.assess_segment_quality(segment_audio, self.target_sr)
-                    
-                    # Only include high-quality segments
-                    if quality_metrics['is_acceptable']:
-                        # Save segment
-                        segment_path = f"{audio_path}_segment_{i:03d}.wav"
-                        sf.write(segment_path, segment_audio, self.target_sr)
+            if 'segments' in result and result['segments']:
+                # Process each segment from Whisper
+                for i, segment in enumerate(result['segments']):
+                    if isinstance(segment, dict) and 'text' in segment:
+                        # Extract segment audio and assess quality
+                        start_time = segment.get('start', 0.0)
+                        end_time = segment.get('end', start_time + 10.0)
+                        duration = end_time - start_time
                         
-                        segments.append({
-                            'index': i,
-                            'start_time': segment['start'],
-                            'end_time': segment['end'],
-                            'duration': segment['end'] - segment['start'],
-                            'transcript': segment['text'].strip(),
-                            'audio_path': segment_path,
-                            'quality_metrics': quality_metrics
-                        })
+                        # Only process segments with reasonable duration
+                        if duration >= 1.0 and duration <= 30.0:
+                            # Load audio for this segment
+                            y, sr = librosa.load(audio_path, sr=None)
+                            start_sample = int(start_time * sr)
+                            end_sample = int(end_time * sr)
+                            
+                            if start_sample < len(y) and end_sample <= len(y):
+                                segment_audio = y[start_sample:end_sample]
+                                
+                                # Assess quality
+                                quality_metrics = self.assess_segment_quality(segment_audio, sr)
+                                
+                                # Save segment audio
+                                segment_filename = f"{audio_path}_segment_{i:03d}.wav"
+                                sf.write(segment_filename, segment_audio, sr)
+                                
+                                segments.append({
+                                    'index': i,
+                                    'start_time': start_time,
+                                    'end_time': end_time,
+                                    'duration': duration,
+                                    'transcript': segment['text'].strip(),
+                                    'audio_path': segment_filename,
+                                    'quality_metrics': quality_metrics
+                                })
+            
+            # If no segments from Whisper, fall back to sentence-based approach
+            if not segments:
+                # Use basic transcription and split into sentences
+                basic_result = whisper_model.transcribe(audio_path)
+                text = basic_result['text']
+                sentences = self._split_into_sentences(text)
+                
+                # Estimate timing for sentences
+                total_duration = self.get_duration(audio_path)
+                time_per_sentence = total_duration / max(len(sentences), 1)
+                
+                for i, sentence in enumerate(sentences):
+                    if self._is_complete_sentence(sentence):
+                        start_time = i * time_per_sentence
+                        end_time = (i + 1) * time_per_sentence
+                        duration = time_per_sentence
+                        
+                        # Load audio for this segment
+                        y, sr = librosa.load(audio_path, sr=None)
+                        start_sample = int(start_time * sr)
+                        end_sample = int(end_time * sr)
+                        
+                        if start_sample < len(y) and end_sample <= len(y):
+                            segment_audio = y[start_sample:end_sample]
+                            
+                            # Assess quality
+                            quality_metrics = self.assess_segment_quality(segment_audio, sr)
+                            
+                            # Save segment audio
+                            segment_filename = f"{audio_path}_segment_{i:03d}.wav"
+                            sf.write(segment_filename, segment_audio, sr)
+                            
+                            segments.append({
+                                'index': i,
+                                'start_time': start_time,
+                                'end_time': end_time,
+                                'duration': duration,
+                                'transcript': sentence.strip(),
+                                'audio_path': segment_filename,
+                                'quality_metrics': quality_metrics
+                            })
             
             return segments
         
         except Exception as e:
             raise Exception(f"Whisper segmentation failed: {str(e)}")
+    
+    def _split_into_sentences(self, text: str) -> List[str]:
+        """Split text into sentences"""
+        import re
+        # Simple sentence splitting based on punctuation
+        sentences = re.split(r'[.!?]+', text)
+        return [s.strip() for s in sentences if s.strip()]
     
     def _is_complete_sentence(self, text: str) -> bool:
         """Enhanced sentence completeness check"""
@@ -361,7 +413,7 @@ class AudioProcessor:
                 # Lower quality threshold if needed
                 quality_scores = [seg['quality_metrics']['quality_score'] for seg in all_segments]
                 if quality_scores:
-                    # Use 75th percentile as new threshold
+                    # Use 25th percentile as new threshold
                     new_threshold = np.percentile(quality_scores, 25)
                     high_quality_segments = [
                         seg for seg in all_segments 

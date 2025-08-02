@@ -55,35 +55,41 @@ class WhisperASR:
     
     def transcribe_with_timestamps(self, audio_path: str, language: Optional[str] = None) -> Dict[str, Any]:
         """
-        Transcribe audio with word-level timestamps
+        Transcribe audio with timestamps and segments
         
         Args:
             audio_path: Path to audio file
             language: Language code (optional)
         
         Returns:
-            Dictionary with transcription and timestamps
+            Dictionary with transcription and segments
         """
         try:
             if not os.path.exists(audio_path):
                 raise FileNotFoundError(f"Audio file not found: {audio_path}")
             
-            # Transcribe with word timestamps
+            # Use basic transcription with word-level timestamps
             if language:
-                result = self.model.transcribe(
-                    audio_path, 
-                    language=language,
-                    word_timestamps=True,
-                    return_segments=True
-                )
+                result = self.model.transcribe(audio_path, language=language, word_timestamps=True)
             else:
-                result = self.model.transcribe(
-                    audio_path,
-                    word_timestamps=True,
-                    return_segments=True
-                )
+                result = self.model.transcribe(audio_path, word_timestamps=True)
             
-            return result
+            # Extract segments from the result
+            segments = []
+            if 'segments' in result:
+                segments = result['segments']
+            else:
+                # If no segments, create a single segment from the full text
+                segments = [{
+                    'text': result['text'],
+                    'start': 0.0,
+                    'end': 0.0  # We'll need to estimate this
+                }]
+            
+            return {
+                'text': result['text'],
+                'segments': segments
+            }
         
         except Exception as e:
             raise Exception(f"Transcription with timestamps failed: {str(e)}")

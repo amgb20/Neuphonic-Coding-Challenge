@@ -16,9 +16,14 @@ class AudioDatabase:
     def init_database(self):
         """Initialize database tables with enhanced schema for ML-ready data"""
         with duckdb.connect(self.db_path) as conn:
-            # Create audio_files table
+            # Drop existing tables to ensure clean schema
+            conn.execute("DROP TABLE IF EXISTS quality_metrics")
+            conn.execute("DROP TABLE IF EXISTS audio_segments")
+            conn.execute("DROP TABLE IF EXISTS audio_files")
+            
+            # Create audio_files table with proper auto-increment
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS audio_files (
+                CREATE TABLE audio_files (
                     id INTEGER PRIMARY KEY,
                     filename VARCHAR NOT NULL,
                     duration REAL,
@@ -33,7 +38,7 @@ class AudioDatabase:
             
             # Create enhanced audio_segments table for ML-ready data
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS audio_segments (
+                CREATE TABLE audio_segments (
                     id INTEGER PRIMARY KEY,
                     original_file_id INTEGER,
                     segment_index INTEGER,
@@ -62,7 +67,7 @@ class AudioDatabase:
             
             # Create quality_metrics table for detailed analysis
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS quality_metrics (
+                CREATE TABLE quality_metrics (
                     id INTEGER PRIMARY KEY,
                     segment_id INTEGER,
                     metric_name VARCHAR,
@@ -75,13 +80,17 @@ class AudioDatabase:
     def insert_audio_file(self, file_data: Dict[str, Any]) -> int:
         """Insert audio file data and return the ID"""
         with duckdb.connect(self.db_path) as conn:
-            # Insert with auto-incrementing ID
-            result = conn.execute("""
+            # Get the next ID manually since DuckDB doesn't auto-increment
+            result = conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM audio_files").fetchone()
+            next_id = result[0] if result else 1
+            
+            # Insert with the next ID
+            conn.execute("""
                 INSERT INTO audio_files 
-                (filename, duration, transcript, wpm, filler_ratio, sentiment_score, audio_path)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                RETURNING id
+                (id, filename, duration, transcript, wpm, filler_ratio, sentiment_score, audio_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, [
+                next_id,
                 file_data["filename"],
                 file_data["duration"],
                 file_data["transcript"],
@@ -89,22 +98,26 @@ class AudioDatabase:
                 file_data["filler_ratio"],
                 file_data["sentiment_score"],
                 file_data["audio_path"]
-            ]).fetchone()
+            ])
             
-            return result[0] if result else None
+            return next_id
     
     def insert_segment_with_quality(self, segment_data: Dict[str, Any]) -> int:
         """Insert audio segment data with comprehensive quality metrics"""
         with duckdb.connect(self.db_path) as conn:
-            result = conn.execute("""
+            # Get the next ID manually
+            result = conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM audio_segments").fetchone()
+            next_id = result[0] if result else 1
+            
+            conn.execute("""
                 INSERT INTO audio_segments 
-                (original_file_id, segment_index, start_time, end_time, duration,
+                (id, original_file_id, segment_index, start_time, end_time, duration,
                  transcript, audio_path, wpm, filler_ratio, sentiment_score, quality_score,
                  volume, volume_db, noise_ratio, snr_estimate, zero_crossing_rate, 
                  spectral_centroid, is_ml_ready, training_priority)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                RETURNING id
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
+                next_id,
                 segment_data["original_file_id"],
                 segment_data["segment_index"],
                 segment_data["start_time"],
@@ -124,9 +137,9 @@ class AudioDatabase:
                 segment_data.get("spectral_centroid", 0.0),
                 segment_data.get("is_ml_ready", False),
                 segment_data.get("training_priority", 0.0)
-            ]).fetchone()
+            ])
             
-            return result[0] if result else None
+            return next_id
     
     def get_ml_ready_segments(self, min_quality_score: float = 0.3, 
                              limit: int = 1000) -> List[Dict[str, Any]]:
