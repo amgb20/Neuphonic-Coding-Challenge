@@ -5,9 +5,9 @@ Debug script to test quality assessment
 
 import sys
 import os
-sys.path.append('src')
+sys.path.append('../src')
 
-from src.audio_processor import AudioProcessor
+from audio_processor import AudioProcessor
 import librosa
 import numpy as np
 

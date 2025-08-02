@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
+import WaveSurfer from 'wavesurfer.js';
 
 interface AudioFile {
   id: number;
@@ -40,7 +41,10 @@ const AudioPlayer: React.FC = () => {
   const [duration, setDuration] = useState(0);
   const [viewMode, setViewMode] = useState<'full' | 'segments'>('full');
   const [selectedSegment, setSelectedSegment] = useState<AudioSegment | null>(null);
+  const [currentWordIndex, setCurrentWordIndex] = useState(-1);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const waveformRef = useRef<HTMLDivElement>(null);
+  const wavesurferRef = useRef<WaveSurfer | null>(null);
 
   useEffect(() => {
     if (id) {
@@ -48,6 +52,118 @@ const AudioPlayer: React.FC = () => {
       fetchSegments();
     }
   }, [id]);
+
+  useEffect(() => {
+    if (audioFile && waveformRef.current && !wavesurferRef.current) {
+      initializeWaveSurfer();
+    }
+  }, [audioFile]);
+
+  const initializeWaveSurfer = () => {
+    if (!waveformRef.current || !audioFile) return;
+
+    try {
+      // Create canvas for gradients
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        console.error('Failed to get canvas context');
+        return;
+      }
+      canvas.width = 100;
+      canvas.height = 100;
+
+      // Define the waveform gradient
+      const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height * 1.35);
+      gradient.addColorStop(0, '#656666'); // Top color
+      gradient.addColorStop((canvas.height * 0.7) / canvas.height, '#656666'); // Top color
+      gradient.addColorStop((canvas.height * 0.7 + 1) / canvas.height, '#ffffff'); // White line
+      gradient.addColorStop((canvas.height * 0.7 + 2) / canvas.height, '#ffffff'); // White line
+      gradient.addColorStop((canvas.height * 0.7 + 3) / canvas.height, '#B1B1B1'); // Bottom color
+      gradient.addColorStop(1, '#B1B1B1'); // Bottom color
+
+      // Define the progress gradient
+      const progressGradient = ctx.createLinearGradient(0, 0, 0, canvas.height * 1.35);
+      progressGradient.addColorStop(0, '#EE772F'); // Top color
+      progressGradient.addColorStop((canvas.height * 0.7) / canvas.height, '#EB4926'); // Top color
+      progressGradient.addColorStop((canvas.height * 0.7 + 1) / canvas.height, '#ffffff'); // White line
+      progressGradient.addColorStop((canvas.height * 0.7 + 2) / canvas.height, '#ffffff'); // White line
+      progressGradient.addColorStop((canvas.height * 0.7 + 3) / canvas.height, '#F6B094'); // Bottom color
+      progressGradient.addColorStop(1, '#F6B094'); // Bottom color
+
+      wavesurferRef.current = WaveSurfer.create({
+        container: waveformRef.current,
+        waveColor: gradient,
+        progressColor: progressGradient,
+        barWidth: 2,
+        barRadius: 3,
+        cursorWidth: 1,
+        height: 80,
+        barGap: 3,
+      });
+
+      wavesurferRef.current.load(`http://localhost:8000/api/audio-files/${id}/audio`);
+
+      wavesurferRef.current.on('ready', () => {
+        console.log('WaveSurfer is ready');
+      });
+
+      wavesurferRef.current.on('audioprocess', (currentTime: number) => {
+        setCurrentTime(currentTime);
+        updateWordHighlighting(currentTime);
+      });
+
+      wavesurferRef.current.on('play', () => {
+        setIsPlaying(true);
+      });
+
+      wavesurferRef.current.on('pause', () => {
+        setIsPlaying(false);
+      });
+
+      wavesurferRef.current.on('finish', () => {
+        setIsPlaying(false);
+        setCurrentWordIndex(-1);
+      });
+
+      wavesurferRef.current.on('error', (error: any) => {
+        console.error('WaveSurfer error:', error);
+      });
+
+      // Add interaction for play/pause on click
+      wavesurferRef.current.on('interaction', () => {
+        wavesurferRef.current?.playPause();
+      });
+
+      // Add hover effect
+      if (waveformRef.current) {
+        const hoverElement = waveformRef.current.querySelector('.hover-effect') as HTMLElement;
+        if (hoverElement) {
+          waveformRef.current.addEventListener('pointermove', (e) => {
+            const rect = waveformRef.current?.getBoundingClientRect();
+            if (rect) {
+              const offsetX = e.clientX - rect.left;
+              hoverElement.style.width = `${offsetX}px`;
+            }
+          });
+        }
+      }
+
+    } catch (error) {
+      console.error('Failed to initialize WaveSurfer:', error);
+    }
+  };
+
+  const updateWordHighlighting = (currentTime: number) => {
+    if (!audioFile?.transcript) return;
+
+    const words = audioFile.transcript.split(' ');
+    const totalDuration = audioFile.duration;
+    const timePerWord = totalDuration / words.length;
+    const currentWordIndex = Math.floor(currentTime / timePerWord);
+    
+    setCurrentWordIndex(Math.min(currentWordIndex, words.length - 1));
+  };
 
   const fetchAudioFile = async () => {
     try {
@@ -71,20 +187,9 @@ const AudioPlayer: React.FC = () => {
     }
   };
 
-  const handlePlayPause = async () => {
-    if (audioRef.current) {
-      try {
-        if (isPlaying) {
-          audioRef.current.pause();
-          setIsPlaying(false);
-        } else {
-          await audioRef.current.play();
-          setIsPlaying(true);
-        }
-      } catch (error) {
-        console.error('Audio playback error:', error);
-        setError('Failed to play audio file');
-      }
+  const handlePlayPause = () => {
+    if (wavesurferRef.current) {
+      wavesurferRef.current.playPause();
     }
   };
 
@@ -109,14 +214,11 @@ const AudioPlayer: React.FC = () => {
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      setError('Failed to download segment');
       console.error('Error downloading segment:', err);
     }
   };
 
   const downloadFullAudio = async () => {
-    if (!audioFile) return;
-    
     try {
       const response = await axios.get(`http://localhost:8000/api/audio-files/${id}/audio`, {
         responseType: 'blob'
@@ -125,14 +227,13 @@ const AudioPlayer: React.FC = () => {
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `${audioFile.filename.replace(/\.[^/.]+$/, '')}.mp3`);
+      link.setAttribute('download', `${audioFile?.filename || 'audio'}.mp3`);
       document.body.appendChild(link);
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      setError('Failed to download audio file');
-      console.error('Error downloading audio file:', err);
+      console.error('Error downloading full audio:', err);
     }
   };
 
@@ -145,52 +246,31 @@ const AudioPlayer: React.FC = () => {
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `segments_${id}.zip`);
+      link.setAttribute('download', `${audioFile?.filename || 'audio'}_segments.zip`);
       document.body.appendChild(link);
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      setError('Failed to download segments');
       console.error('Error downloading segments:', err);
     }
   };
 
-  const handleTimeUpdate = () => {
-    if (audioRef.current) {
-      setCurrentTime(audioRef.current.currentTime);
-    }
-  };
-
-  const handleLoadedMetadata = () => {
-    if (audioRef.current) {
-      setDuration(audioRef.current.duration);
-    }
-  };
-
-  const handleSeek = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const time = parseFloat(event.target.value);
-    if (audioRef.current) {
-      audioRef.current.currentTime = time;
-      setCurrentTime(time);
-    }
-  };
-
   const formatTime = (time: number) => {
-    const mins = Math.floor(time / 60);
-    const secs = Math.floor(time % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+    const minutes = Math.floor(time / 60);
+    const seconds = Math.floor(time % 60);
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
   const getSentimentColor = (score: number) => {
-    if (score > 0.3) return 'text-green-600';
-    if (score < -0.3) return 'text-red-600';
-    return 'text-yellow-600';
+    if (score > 0.1) return 'text-green-600';
+    if (score < -0.1) return 'text-red-600';
+    return 'text-gray-600';
   };
 
   const getSentimentLabel = (score: number) => {
-    if (score > 0.3) return 'Positive';
-    if (score < -0.3) return 'Negative';
+    if (score > 0.1) return 'Positive';
+    if (score < -0.1) return 'Negative';
     return 'Neutral';
   };
 
@@ -206,21 +286,46 @@ const AudioPlayer: React.FC = () => {
     return 'Low';
   };
 
-  // Calculate aggregated metrics for segments
   const getSegmentMetrics = () => {
     if (segments.length === 0) return null;
-    
+
     const avgWpm = segments.reduce((sum, seg) => sum + seg.wpm, 0) / segments.length;
     const avgFillerRatio = segments.reduce((sum, seg) => sum + seg.filler_ratio, 0) / segments.length;
     const avgSentiment = segments.reduce((sum, seg) => sum + seg.sentiment_score, 0) / segments.length;
     const avgQuality = segments.reduce((sum, seg) => sum + seg.quality_score, 0) / segments.length;
-    
+
     return {
-      wpm: avgWpm,
-      filler_ratio: avgFillerRatio,
-      sentiment_score: avgSentiment,
-      quality_score: avgQuality
+      avgWpm: avgWpm.toFixed(2),
+      avgFillerRatio: (avgFillerRatio * 100).toFixed(2),
+      avgSentiment: avgSentiment.toFixed(3),
+      avgQuality: (avgQuality * 100).toFixed(2)
     };
+  };
+
+  const renderTranscriptWithHighlighting = () => {
+    if (!audioFile?.transcript) return null;
+
+    const words = audioFile.transcript.split(' ');
+    
+    return (
+      <div className="bg-gray-50 p-4 rounded-lg max-h-96 overflow-y-auto">
+        <h3 className="text-lg font-semibold mb-3">Transcript with Word Highlighting</h3>
+        <div className="text-gray-800 leading-relaxed">
+          {words.map((word, index) => (
+            <span
+              key={index}
+              className={`inline-block mr-1 px-1 rounded ${
+                index === currentWordIndex 
+                  ? 'bg-blue-200 text-blue-800 font-medium' 
+                  : ''
+              }`}
+            >
+              {word}
+            </span>
+          ))}
+        </div>
+      </div>
+    );
   };
 
   if (loading) {
@@ -336,32 +441,23 @@ const AudioPlayer: React.FC = () => {
                 </button>
               </div>
 
-              {/* Progress Bar */}
-              <div className="space-y-2">
-                <input
-                  type="range"
-                  min="0"
-                  max={duration || 0}
-                  value={currentTime}
-                  onChange={handleSeek}
-                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
-                />
-                <div className="flex justify-between text-sm text-white">
-                  <span>{formatTime(currentTime)}</span>
-                  <span>{formatTime(duration)}</span>
+              {/* Soundcloud-style Waveform */}
+              <div className="relative">
+                <div ref={waveformRef} className="cursor-pointer relative hover:bg-gray-50 rounded" style={{ background: 'transparent' }}>
+                  <div className="absolute top-1/2 left-0 transform -translate-y-1/2 z-10 text-xs bg-black bg-opacity-75 text-gray-300 px-2 py-1 rounded">
+                    {formatTime(currentTime)}
+                  </div>
+                  <div className="absolute top-1/2 right-0 transform -translate-y-1/2 z-10 text-xs bg-black bg-opacity-75 text-gray-300 px-2 py-1 rounded">
+                    {formatTime(duration)}
+                  </div>
+                  <div className="hover-effect absolute left-0 top-0 z-10 pointer-events-none h-full w-0 mix-blend-overlay bg-white bg-opacity-50 opacity-0 transition-opacity duration-200" 
+                       style={{ width: '0px' }}></div>
                 </div>
               </div>
 
               {/* Hidden Audio Element */}
               <audio
                 ref={audioRef}
-                onTimeUpdate={handleTimeUpdate}
-                onLoadedMetadata={handleLoadedMetadata}
-                onEnded={() => setIsPlaying(false)}
-                onError={(e) => {
-                  console.error('Audio error:', e);
-                  setError('Failed to load audio file');
-                }}
                 style={{ display: 'none' }}
               >
                 <source src={`http://localhost:8000/api/audio-files/${audioFile.id}/audio`} type="audio/wav" />
@@ -374,7 +470,7 @@ const AudioPlayer: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
               <div className="text-center">
-                <div className="text-3xl font-bold text-gray-900 mb-2">{audioFile.wpm}</div>
+                <div className="text-3xl font-bold text-gray-900 mb-2">{audioFile.wpm.toFixed(2)}</div>
                 <div className="text-sm text-gray-600">Words Per Minute</div>
                 <div className="mt-2 text-xs text-gray-500">
                   {audioFile.wpm < 120 ? 'Slow' : audioFile.wpm > 160 ? 'Fast' : 'Normal'} pace
@@ -407,15 +503,8 @@ const AudioPlayer: React.FC = () => {
             </div>
           </div>
 
-          {/* Transcript */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Full Transcript</h3>
-            <div className="bg-gray-50 rounded-lg p-4">
-              <p className="transcript-text text-gray-700">
-                {audioFile.transcript || 'No transcript available'}
-              </p>
-            </div>
-          </div>
+          {/* Transcript with Word Highlighting */}
+          {renderTranscriptWithHighlighting()}
         </>
       )}
 
@@ -427,7 +516,7 @@ const AudioPlayer: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                 <div className="text-center">
-                  <div className="text-3xl font-bold text-gray-900 mb-2">{segmentMetrics.wpm.toFixed(1)}</div>
+                  <div className="text-3xl font-bold text-gray-900 mb-2">{segmentMetrics.avgWpm}</div>
                   <div className="text-sm text-gray-600">Avg WPM</div>
                   <div className="mt-2 text-xs text-gray-500">Across all segments</div>
                 </div>
@@ -436,7 +525,7 @@ const AudioPlayer: React.FC = () => {
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                 <div className="text-center">
                   <div className="text-3xl font-bold text-gray-900 mb-2">
-                    {(segmentMetrics.filler_ratio * 100).toFixed(1)}%
+                    {segmentMetrics.avgFillerRatio}%
                   </div>
                   <div className="text-sm text-gray-600">Avg Filler Words</div>
                   <div className="mt-2 text-xs text-gray-500">Across all segments</div>
@@ -445,24 +534,24 @@ const AudioPlayer: React.FC = () => {
 
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                 <div className="text-center">
-                  <div className={`text-3xl font-bold mb-2 ${getSentimentColor(segmentMetrics.sentiment_score)}`}>
-                    {getSentimentLabel(segmentMetrics.sentiment_score)}
+                  <div className={`text-3xl font-bold mb-2 ${getSentimentColor(parseFloat(segmentMetrics.avgSentiment))}`}>
+                    {getSentimentLabel(parseFloat(segmentMetrics.avgSentiment))}
                   </div>
                   <div className="text-sm text-gray-600">Avg Sentiment</div>
                   <div className="mt-2 text-xs text-gray-500">
-                    Score: {segmentMetrics.sentiment_score.toFixed(3)}
+                    Score: {segmentMetrics.avgSentiment}
                   </div>
                 </div>
               </div>
 
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                 <div className="text-center">
-                  <div className={`text-3xl font-bold mb-2 ${getQualityColor(segmentMetrics.quality_score)}`}>
-                    {getQualityLabel(segmentMetrics.quality_score)}
+                  <div className={`text-3xl font-bold mb-2 ${getQualityColor(parseFloat(segmentMetrics.avgQuality))}`}>
+                    {getQualityLabel(parseFloat(segmentMetrics.avgQuality))}
                   </div>
                   <div className="text-sm text-gray-600">Avg Quality</div>
                   <div className="mt-2 text-xs text-gray-500">
-                    {(segmentMetrics.quality_score * 100).toFixed(0)}%
+                    {segmentMetrics.avgQuality}%
                   </div>
                 </div>
               </div>
@@ -493,7 +582,7 @@ const AudioPlayer: React.FC = () => {
                     {segment.transcript}
                   </p>
                   <div className="flex justify-between text-xs text-gray-500 mb-3">
-                    <span>WPM: {segment.wpm}</span>
+                    <span>WPM: {segment.wpm.toFixed(2)}</span>
                     <span>Sentiment: {segment.sentiment_score.toFixed(2)}</span>
                   </div>
                   <div className="flex space-x-2">

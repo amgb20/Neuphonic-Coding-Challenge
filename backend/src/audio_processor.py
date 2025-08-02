@@ -105,6 +105,9 @@ class AudioProcessor:
             }
         
         except Exception as e:
+            print(f"Quality assessment error: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return {
                 'volume': 0.0,
                 'volume_db': -60.0,
