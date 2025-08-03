@@ -165,8 +165,8 @@ async def process_audio_pipeline(audio_path: str) -> Dict[str, Any]:
         raise Exception(f"Processing failed: {str(e)}")
 
 @app.post("/api/process-audio-ml")
-async def process_audio_ml(file: UploadFile = File(...), min_segments: int = 50):
-    """Process uploaded audio file for ML training with comprehensive quality filtering"""
+async def process_audio_ml(file: UploadFile = File(...)):
+    """Process uploaded audio file for ML training with hardcoded 60 segments maximum"""
     try:
         # Accept any audio file type
         import uuid
@@ -180,9 +180,9 @@ async def process_audio_ml(file: UploadFile = File(...), min_segments: int = 50)
         # Step 1: Normalize and resample
         processed_path = audio_processor.process_audio(file_path)
 
-        # Step 2: Create ML-ready segments with quality filtering
+        # Step 2: Create ML-ready segments with hardcoded 60 segments maximum
         segments = audio_processor.create_ml_ready_segments(
-            processed_path, asr_model, min_segments=min_segments
+            processed_path, asr_model
         )
 
         # Step 3: Calculate features for full audio and build transcript

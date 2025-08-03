@@ -68,11 +68,11 @@ class WhisperASR:
             if not os.path.exists(audio_path):
                 raise FileNotFoundError(f"Audio file not found: {audio_path}")
             
-            # Use basic transcription with word-level timestamps
+            # Use transcription with segment-level timestamps
             if language:
-                result = self.model.transcribe(audio_path, language=language, word_timestamps=True)
+                result = self.model.transcribe(audio_path, language=language)
             else:
-                result = self.model.transcribe(audio_path, word_timestamps=True)
+                result = self.model.transcribe(audio_path)
             
             # Extract segments from the result
             segments = []

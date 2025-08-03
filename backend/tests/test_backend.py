@@ -9,11 +9,12 @@ import json
 import os
 import time
 from pathlib import Path
+from tqdm import tqdm
 
 # Configuration
 API_BASE_URL = "http://localhost:8000"
 # Fix the path to be relative to the backend directory
-AUDIO_FILES_DIR = os.path.join(os.path.dirname(__file__), "..", "audio_files")
+AUDIO_FILES_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "audio_files")
 
 def test_health():
     """Test health endpoint"""
@@ -184,7 +185,7 @@ def test_batch_processing(max_files: int = 3):
     files_to_process = mp3_files[:max_files]
     print(f"Found {len(files_to_process)} files to process:")
     
-    for i, file_path in enumerate(files_to_process, 1):
+    for i, file_path in tqdm(enumerate(files_to_process, 1), total=len(files_to_process), desc="Processing files"):
         print(f"\n[{i}/{len(files_to_process)}] Processing: {file_path.name}")
         test_upload_and_process(str(file_path))
         test_upload_and_process_ml(str(file_path))

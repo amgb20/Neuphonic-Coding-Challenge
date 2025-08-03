@@ -18,7 +18,7 @@ class AudioProcessor:
         self.min_volume_threshold = 0.0005  # Lowered further for more tolerance
         self.max_noise_ratio = 0.9  # Increased tolerance for background noise
         self.min_snr_threshold = 3.0  # Lowered threshold for SNR
-        self.min_quality_score = 0.05  # Much lower threshold for acceptance
+        self.min_quality_score = 0.001  # Very low threshold to accept most segments
     
     def process_audio(self, audio_path: str) -> str:
         """Process audio file: normalize, convert sample rate, etc."""
@@ -74,7 +74,7 @@ class AudioProcessor:
             volume_db = 20 * np.log10(volume + 1e-10)
             
             # Background noise assessment
-            spectral_flatness = librosa.feature.spectral_flatness(y=audio_segment, sr=sr)
+            spectral_flatness = librosa.feature.spectral_flatness(y=audio_segment)
             noise_ratio = float(np.mean(spectral_flatness))
             
             # Signal-to-noise ratio estimation
@@ -269,8 +269,8 @@ class AudioProcessor:
                         end_time = segment.get('end', start_time + 10.0)
                         duration = end_time - start_time
                         
-                        # Only process segments with reasonable duration
-                        if duration >= 1.0 and duration <= 30.0:
+                        # Process all Whisper segments (no duration constraints)
+                        if duration > 0.01:  # Only filter out extremely short segments (< 10ms)
                             # Load audio for this segment
                             y, sr = librosa.load(audio_path, sr=None)
                             start_sample = int(start_time * sr)
@@ -296,47 +296,8 @@ class AudioProcessor:
                                     'quality_metrics': quality_metrics
                                 })
             
-            # If no segments from Whisper, fall back to sentence-based approach
-            if not segments:
-                # Use basic transcription and split into sentences
-                basic_result = whisper_model.transcribe(audio_path)
-                text = basic_result['text']
-                sentences = self._split_into_sentences(text)
-                
-                # Estimate timing for sentences
-                total_duration = self.get_duration(audio_path)
-                time_per_sentence = total_duration / max(len(sentences), 1)
-                
-                for i, sentence in enumerate(sentences):
-                    if self._is_complete_sentence(sentence):
-                        start_time = i * time_per_sentence
-                        end_time = (i + 1) * time_per_sentence
-                        duration = time_per_sentence
-                        
-                        # Load audio for this segment
-                        y, sr = librosa.load(audio_path, sr=None)
-                        start_sample = int(start_time * sr)
-                        end_sample = int(end_time * sr)
-                        
-                        if start_sample < len(y) and end_sample <= len(y):
-                            segment_audio = y[start_sample:end_sample]
-                            
-                            # Assess quality
-                            quality_metrics = self.assess_segment_quality(segment_audio, sr)
-                            
-                            # Save segment audio
-                            segment_filename = f"{audio_path}_segment_{i:03d}.wav"
-                            sf.write(segment_filename, segment_audio, sr)
-                            
-                            segments.append({
-                                'index': i,
-                                'start_time': start_time,
-                                'end_time': end_time,
-                                'duration': duration,
-                                'transcript': sentence.strip(),
-                                'audio_path': segment_filename,
-                                'quality_metrics': quality_metrics
-                            })
+            # Use only Whisper segments (no fallback)
+            # If no segments from Whisper, return empty list
             
             return segments
         
@@ -388,43 +349,26 @@ class AudioProcessor:
     def create_ml_ready_segments(self, audio_path: str, whisper_model, 
                                 min_segments: int = 50) -> List[Dict[str, Any]]:
         """
-        Create ML-ready segments with comprehensive quality filtering
+        Create ML-ready segments using only Whisper segmentation
+        No quality constraints - uses all Whisper segments up to 60 maximum
         
         Args:
             audio_path: Path to audio file
             whisper_model: Whisper model instance
-            min_segments: Minimum number of segments to generate
+            min_segments: Ignored parameter (kept for compatibility)
         
         Returns:
-            List of high-quality segments suitable for ML training
+            List of all Whisper segments (max 60)
         """
         try:
-            # Get all potential segments
+            # Hardcoded maximum segments for ML training
+            MAX_SEGMENTS = 60
+            
+            # Get all segments from Whisper (no quality filtering)
             all_segments = self.segment_with_whisper(audio_path, whisper_model)
             
-            # Sort by quality score
-            all_segments.sort(key=lambda x: x['quality_metrics']['quality_score'], reverse=True)
-            
-            # Filter for minimum quality threshold
-            high_quality_segments = [
-                seg for seg in all_segments 
-                if seg['quality_metrics']['quality_score'] >= self.min_quality_score
-            ]
-            
-            # Ensure we have enough segments
-            if len(high_quality_segments) < min_segments:
-                # Lower quality threshold if needed
-                quality_scores = [seg['quality_metrics']['quality_score'] for seg in all_segments]
-                if quality_scores:
-                    # Use 25th percentile as new threshold
-                    new_threshold = np.percentile(quality_scores, 25)
-                    high_quality_segments = [
-                        seg for seg in all_segments 
-                        if seg['quality_metrics']['quality_score'] >= new_threshold
-                    ]
-            
-            # Return top segments (up to min_segments)
-            return high_quality_segments[:min_segments]
+            # Return all available segments (up to MAX_SEGMENTS)
+            return all_segments[:MAX_SEGMENTS]
         
         except Exception as e:
             raise Exception(f"ML-ready segment creation failed: {str(e)}")
