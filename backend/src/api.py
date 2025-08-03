@@ -15,6 +15,7 @@ from .database import AudioDatabase
 from .audio_processor import AudioProcessor
 from .asr_model import WhisperASR
 from .feature_extractor import FeatureExtractor
+import uuid
 
 app = FastAPI(title="Audio Processing API", version="1.0.0")
 
@@ -114,7 +115,6 @@ async def process_audio_file(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="Invalid file type")
         
         # Save uploaded file to processed_data directory
-        import uuid
         unique_filename = f"{uuid.uuid4()}_{file.filename}"
         file_path = f"/app/processed_data/{unique_filename}"
         
@@ -133,19 +133,19 @@ async def process_audio_file(file: UploadFile = File(...)):
 async def process_audio_pipeline(audio_path: str) -> Dict[str, Any]:
     """Complete audio processing pipeline"""
     try:
-        # Step 1: Process audio (normalize, convert sample rate)
+        # Process audio (normalize, convert sample rate)
         processed_path = audio_processor.process_audio(audio_path)
         
-        # Step 2: Generate transcript
+        # Generate transcript
         transcript = asr_model.transcribe(processed_path)
         
-        # Step 3: Extract features
+        # Extract features
         duration = audio_processor.get_duration(processed_path)
         wpm = feature_extractor.calculate_wpm(transcript, duration)
         filler_ratio = feature_extractor.calculate_filler_ratio(transcript)
         sentiment_score = feature_extractor.calculate_sentiment(transcript)
         
-        # Step 4: Store in database
+        # Store in database
         file_data = {
             "filename": os.path.basename(audio_path),
             "duration": duration,
@@ -177,15 +177,15 @@ async def process_audio_ml(file: UploadFile = File(...)):
             content = await file.read()
             buffer.write(content)
 
-        # Step 1: Normalize and resample
+        # Normalize and resample
         processed_path = audio_processor.process_audio(file_path)
 
-        # Step 2: Create ML-ready segments with hardcoded 60 segments maximum
+        # Create ML-ready segments with hardcoded 60 segments maximum
         segments = audio_processor.create_ml_ready_segments(
             processed_path, asr_model
         )
 
-        # Step 3: Calculate features for full audio and build transcript
+        # Calculate features for full audio and build transcript
         full_transcript = " ".join([seg['transcript'] for seg in segments])
         duration = audio_processor.get_duration(processed_path)
         
@@ -194,7 +194,7 @@ async def process_audio_ml(file: UploadFile = File(...)):
         full_filler_ratio = feature_extractor.calculate_filler_ratio(full_transcript)
         full_sentiment = feature_extractor.calculate_sentiment(full_transcript)
 
-        # Step 4: Store original file with calculated features
+        # Store original file with calculated features
         file_id = db.insert_audio_file({
             "filename": os.path.basename(file_path),
             "duration": duration,
@@ -205,7 +205,7 @@ async def process_audio_ml(file: UploadFile = File(...)):
             "audio_path": processed_path
         })
 
-        # Step 5: Store segments with quality metrics
+        # Store segments with quality metrics
         stored_segments = []
         for segment in segments:
             # Extract features for segment
