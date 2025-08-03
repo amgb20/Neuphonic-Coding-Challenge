@@ -27,15 +27,60 @@ A complete audio processing system that ingests audio files, processes them thro
                        └─────────────────┘
 ```
 
+## 🔄 Backend Processing Flow
+
+The backend follows a comprehensive pipeline for audio processing:
+
+### 1. **Audio Upload & Validation**
+- Accepts audio files (.wav, .mp3, .m4a)
+- Validates file format and size
+- Stores original file in `audio_files/` directory
+
+### 2. **Audio Preprocessing** (`audio_processor.py`)
+- **Normalization**: Adjusts volume levels to optimal range
+- **Sample Rate Conversion**: Converts to 16kHz for Whisper compatibility
+- **Channel Conversion**: Converts stereo to mono if needed
+- **Format Standardization**: Ensures consistent audio format
+
+### 3. **Speech Recognition** (`asr_model.py`)
+- **Whisper ASR**: Uses OpenAI's Whisper model for transcription
+- **Model Selection**: Configurable model sizes (tiny/base/small/medium/large)
+- **Batch Processing**: Handles long audio files efficiently
+- **Error Recovery**: Retries on transcription failures
+
+### 4. **Audio Segmentation** (`audio_processor.py`)
+- **Silence Detection**: Splits audio at natural pauses
+- **Quality Assessment**: Evaluates each segment's audio quality
+- **Length Optimization**: Creates segments of 1-30 seconds
+- **Speech Detection**: Identifies speech vs. silence regions
+
+### 5. **Feature Extraction** (`feature_extractor.py`)
+- **WPM Calculation**: Words per minute speaking rate
+- **Filler Word Detection**: Identifies and counts filler words
+- **Sentiment Analysis**: TextBlob-based sentiment scoring
+- **Quality Metrics**: Audio quality assessment per segment
+
+### 6. **Database Storage** (`database.py`)
+- **DuckDB Integration**: Fast, embedded database
+- **File Metadata**: Stores file information and processing results
+- **Segment Data**: Individual segment details with features
+- **Query Optimization**: Efficient data retrieval for dashboard
+
+### 7. **API Endpoints** (`api.py`)
+- **RESTful API**: FastAPI-based endpoints
+- **File Management**: Upload, download, and metadata retrieval
+- **Segment Access**: Individual segment data and downloads
+- **Health Monitoring**: Service status and diagnostics
+
 ## 📋 Requirements
 
 - Docker and Docker Compose
 - 4GB+ RAM (for Whisper model loading)
 - 2GB+ disk space
 
-## 🛠️ Quick Start
+## 🛠️ Quick Start with Docker
 
-### 1. Clone and Setup
+### 1. Clone the Repository
 
 ```bash
 git clone <repository-url>
@@ -48,17 +93,17 @@ cd Neuphonic-Coding-Challenge
 mkdir -p audio_files processed_data data
 ```
 
-### 3. Build and Run
+### 3. Build and Run with Docker
 
 ```bash
-# Build all services
-make build
+# Build all Docker containers
+docker-compose build
 
-# Start all services
-make run
+# Start all services in background
+docker-compose up -d
 
-# Or start with logs
-make dev
+# Or start with live logs
+docker-compose up
 ```
 
 ### 4. Access the Application
@@ -67,16 +112,49 @@ make dev
 - **Backend API**: http://localhost:8000
 - **API Documentation**: http://localhost:8000/docs
 
+### 5. Verify Installation
+
+```bash
+# Check if all services are running
+docker-compose ps
+
+# Check service health
+curl http://localhost:8000/health
+```
+
+## 🐳 Docker Services Overview
+
+### Backend Service (`backend/`)
+- **Base Image**: Python 3.11-slim
+- **Dependencies**: FFmpeg, audio processing libraries
+- **Port**: 8000
+- **Features**: Audio processing, ASR, feature extraction
+
+### Frontend Service (`frontend/`)
+- **Base Image**: Node.js 18-alpine
+- **Port**: 3000
+- **Features**: React development server with hot reload
+
+### Redis Service
+- **Base Image**: Redis Alpine
+- **Port**: 6379
+- **Features**: Caching and session management
+
+### Volume Mounts
+- `./audio_files` → `/app/audio_files` (input files)
+- `./processed_data` → `/app/processed_data` (processed files)
+- `./data` → `/app/data` (database files)
+
 ## 📁 Project Structure
 
 ```
 neuphonic-coding-challenge/
 ├── backend/
 │   ├── src/
-│   │   ├── api.py              # FastAPI application
-│   │   ├── audio_processor.py  # Audio processing logic
+│   │   ├── api.py              # FastAPI application & endpoints
+│   │   ├── audio_processor.py  # Audio processing & segmentation
 │   │   ├── asr_model.py        # Whisper ASR integration
-│   │   ├── feature_extractor.py # Feature calculation
+│   │   ├── feature_extractor.py # Feature calculation (WPM, sentiment)
 │   │   └── database.py         # DuckDB operations
 │   ├── requirements.txt         # Python dependencies
 │   └── Dockerfile              # Backend container
@@ -149,8 +227,19 @@ make health           # Check service health
 
 ### Audio Processing
 - `POST /api/process-audio` - Upload and process audio file
+- `POST /api/process-audio-ml` - Process with ML-ready segments
 - `GET /api/audio-files` - Get all processed files
 - `GET /api/audio-files/{id}` - Get specific file details
+
+### Segments
+- `GET /api/audio-files/{id}/segments` - Get file segments
+- `GET /api/ml-ready-segments` - Get high-quality segments
+- `GET /api/quality-statistics` - Get quality metrics
+
+### Downloads
+- `GET /api/audio-files/{id}/audio` - Download processed audio
+- `GET /api/audio-files/{id}/segments/{segment_id}/download` - Download segment
+- `GET /api/audio-files/{id}/segments/download-zip` - Download all segments
 
 ### Health Check
 - `GET /health` - Service health status
@@ -158,14 +247,14 @@ make health           # Check service health
 ## 📊 Features Extracted
 
 ### Basic Features
-- **WPM (Words Per Minute)**: Speaking rate calculation
+- **WPM (Words Per Minute)**: Speaking rate calculation with 2 decimal precision
 - **Filler Word Ratio**: Percentage of filler words used
 - **Sentiment Score**: Text sentiment analysis (-1 to 1)
 
 ### Advanced Features
 - **Speech Rate Metrics**: Syllables per minute, pause rate
 - **Complexity Metrics**: Word length, vocabulary diversity
-- **Quality Metrics**: Audio quality assessment
+- **Quality Metrics**: Audio quality assessment per segment
 
 ## 🐳 Docker Configuration
 

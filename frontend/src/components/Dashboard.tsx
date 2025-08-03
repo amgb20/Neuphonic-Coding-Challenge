@@ -206,7 +206,7 @@ const Dashboard: React.FC = () => {
           </div>
           <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
             <div className="text-2xl font-bold text-gray-900">
-              {Math.round(audioFiles.reduce((sum, file) => sum + file.wpm, 0) / audioFiles.length)}
+              {(audioFiles.reduce((sum, file) => sum + file.wpm, 0) / audioFiles.length).toFixed(2)}
             </div>
             <div className="text-sm text-gray-600">Avg WPM</div>
           </div>
@@ -263,7 +263,7 @@ const Dashboard: React.FC = () => {
                   {segment.transcript}
                 </p>
                 <div className="flex justify-between text-xs text-gray-500">
-                  <span>WPM: {segment.wpm}</span>
+                                          <span>WPM: {segment.wpm.toFixed(2)}</span>
                   <span>Sentiment: {segment.sentiment_score.toFixed(2)}</span>
                 </div>
               </div>
@@ -324,7 +324,7 @@ const Dashboard: React.FC = () => {
 
                 <div className="grid grid-cols-3 gap-4 mb-4">
                   <div className="text-center">
-                    <div className="text-lg font-semibold text-gray-900">{file.wpm}</div>
+                    <div className="text-lg font-semibold text-gray-900">{file.wpm.toFixed(2)}</div>
                     <div className="text-xs text-gray-500">WPM</div>
                   </div>
                   <div className="text-center">
